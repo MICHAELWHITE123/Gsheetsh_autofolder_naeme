@@ -13,5 +13,6 @@
             "column": "C",
             "mode": "fullpath"
         }
-    ]
+    ],
+    "credentials_path": "C:/Users/Михаил/Documents/Sheets_file/credentials.json"
 }

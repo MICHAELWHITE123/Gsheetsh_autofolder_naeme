@@ -1,0 +1,16 @@
+# File Watcher PRO — зависимости для запуска main.py
+# Установка: pip install -r requirements.txt
+# Запуск:    python main.py
+#
+# PySocks нужен, если в Windows включён SOCKS-прокси (VPN и т.п.),
+# иначе запросы к Google Sheets API падают с ошибкой
+# "Missing dependencies for SOCKS support".
+
+watchdog==6.0.0
+gspread==6.2.1
+google-auth==2.52.0
+google-auth-oauthlib==1.4.0
+pystray==0.19.5
+Pillow==12.2.0
+requests==2.32.3
+PySocks==1.7.1
