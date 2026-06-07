@@ -1,0 +1,17 @@
+{
+    "sheet_url": "https://docs.google.com/spreadsheets/d/14pW6PdrMl-AH11mMil8p4WZXPZoaEmjJNGEkaDM2zdY/edit?usp=sharing",
+    "folders": [
+        {
+            "path": "C:/Users/Михаил/Desktop/Тамбов/Тамбов/Перерыв",
+            "worksheet": "Sheet1",
+            "column": "A",
+            "mode": "filename"
+        },
+        {
+            "path": "C:/Users/Михаил/Desktop/Тамбов/Тамбов/Утро вечер",
+            "worksheet": "Sheet1",
+            "column": "C",
+            "mode": "fullpath"
+        }
+    ]
+}
