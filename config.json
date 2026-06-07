@@ -5,13 +5,15 @@
             "path": "C:/Users/Михаил/Desktop/Тамбов/Тамбов/Перерыв",
             "worksheet": "Sheet1",
             "column": "A",
-            "mode": "filename"
+            "mode": "filename",
+            "sort": "asc"
         },
         {
             "path": "C:/Users/Михаил/Desktop/Тамбов/Тамбов/Утро вечер",
             "worksheet": "Sheet1",
             "column": "C",
-            "mode": "fullpath"
+            "mode": "fullpath",
+            "sort": "alphabet"
         }
     ],
     "credentials_path": "C:/Users/Михаил/Documents/Sheets_file/credentials.json"

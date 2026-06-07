@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import threading
@@ -78,16 +79,28 @@ def load_config():
                     "path": folder,
                     "worksheet": "Sheet1",
                     "column": "A",
-                    "mode": "fullpath"
+                    "mode": "fullpath",
+                    "sort": "off"
                 })
 
             elif isinstance(folder, dict):
+
+                sort = folder.get("sort")
+
+                if sort not in SORT_OPTIONS:
+
+                    sort = (
+                        "alphabet"
+                        if folder.get("sort_by_name")
+                        else "off"
+                    )
 
                 migrated_folders.append({
                     "path": folder.get("path", ""),
                     "worksheet": folder.get("worksheet", "Sheet1"),
                     "column": folder.get("column", "A"),
-                    "mode": folder.get("mode", "fullpath")
+                    "mode": folder.get("mode", "fullpath"),
+                    "sort": sort
                 })
 
         config["folders"] = migrated_folders
@@ -100,6 +113,16 @@ def load_config():
 
 def log(text):
 
+    try:
+
+        root.after(0, lambda: _log_write(text))
+
+    except NameError:
+
+        print(text)
+
+def _log_write(text):
+
     log_box.insert(tk.END, text + "\n")
 
     log_box.see(tk.END)
@@ -110,10 +133,167 @@ def log(text):
 
 def format_path(path, mode):
 
+    path = os.path.normpath(path)
+
     if mode == "filename":
         return os.path.basename(path)
 
     return path
+
+def tracking_key(value, mode):
+
+    if mode == "filename":
+        return os.path.basename(value).casefold()
+
+    return os.path.normcase(os.path.normpath(value))
+
+def is_in_known(formatted, known_paths, mode):
+
+    key = tracking_key(formatted, mode)
+
+    return any(
+        tracking_key(known, mode) == key
+        for known in known_paths
+    )
+
+# =========================================================
+# GOOGLE SHEETS UPDATE
+# =========================================================
+
+def sheet_update(sheet, range_name, values):
+
+    sheet.update(
+        values=values,
+        range_name=range_name
+    )
+
+# =========================================================
+# SORT
+# =========================================================
+
+SORT_OPTIONS = ("off", "alphabet", "asc", "desc")
+
+SORT_LABELS = {
+    "off": "выкл",
+    "alphabet": "алфавит",
+    "asc": "возр.",
+    "desc": "убыв.",
+}
+
+SORT_UI_LABELS = {
+    "off": "Выкл",
+    "alphabet": "Алфавит",
+    "asc": "Возрастание",
+    "desc": "Убывание",
+}
+
+SORT_UI_TO_MODE = {
+    label: mode for mode, label in SORT_UI_LABELS.items()
+}
+
+def get_folder_sort(folder_config):
+
+    sort = folder_config.get("sort")
+
+    if sort in SORT_OPTIONS:
+
+        return sort
+
+    if folder_config.get("sort_by_name"):
+
+        return "alphabet"
+
+    return "off"
+
+def alphabet_key(value):
+
+    return value.lower()
+
+def natural_key(value):
+
+    parts = re.split(r"(\d+)", value.lower())
+
+    return [
+        int(part) if part.isdigit() else part
+        for part in parts
+    ]
+
+def sort_values(values, sort_mode):
+
+    sort_mode = get_folder_sort({"sort": sort_mode})
+
+    if sort_mode == "off":
+
+        return list(values)
+
+    if sort_mode == "alphabet":
+
+        return sorted(values, key=alphabet_key)
+
+    if sort_mode == "asc":
+
+        return sorted(values, key=natural_key)
+
+    return sorted(values, key=natural_key, reverse=True)
+
+def rewrite_column(sheet, column, values):
+
+    column_number = ord(column.upper()) - 64
+
+    if values:
+
+        range_name = f"{column}1:{column}{len(values)}"
+
+        sheet_update(
+            sheet,
+            range_name,
+            [[v] for v in values]
+        )
+
+    old_len = len(sheet.col_values(column_number))
+
+    if old_len > len(values):
+
+        clear_range = f"{column}{len(values) + 1}:{column}{old_len}"
+
+        sheet_update(
+            sheet,
+            clear_range,
+            [[""] for _ in range(old_len - len(values))]
+        )
+
+def append_path_sorted(sheet, value, column, sort_mode, mode="fullpath"):
+
+    column_number = ord(column.upper()) - 64
+
+    values = [v for v in sheet.col_values(column_number) if v]
+
+    if any(
+        tracking_key(existing, mode) == tracking_key(value, mode)
+        for existing in values
+    ):
+
+        return
+
+    values.append(value)
+
+    rewrite_column(
+        sheet,
+        column,
+        sort_values(values, sort_mode)
+    )
+
+def sort_column_in_sheet(sheet, column, sort_mode):
+
+    column_number = ord(column.upper()) - 64
+
+    values = [v for v in sheet.col_values(column_number) if v]
+
+    sorted_list = sort_values(values, sort_mode)
+
+    rewrite_column(sheet, column, sorted_list)
+
+    return sorted_list
 
 # =========================================================
 # GOOGLE SHEETS
@@ -158,7 +338,19 @@ def connect_sheet(sheet_url, worksheet_name):
 # APPEND PATH
 # =========================================================
 
-def append_path(sheet, value, column):
+def append_path(sheet, value, column, sort_mode="off", mode="fullpath"):
+
+    if get_folder_sort({"sort": sort_mode}) != "off":
+
+        append_path_sorted(
+            sheet,
+            value,
+            column,
+            sort_mode,
+            mode
+        )
+
+        return
 
     column_number = ord(column.upper()) - 64
 
@@ -168,13 +360,13 @@ def append_path(sheet, value, column):
 
     cell = f"{column}{next_row}"
 
-    sheet.update(cell, [[value]])
+    sheet_update(sheet, cell, [[value]])
 
 # =========================================================
 # DELETE ROW
 # =========================================================
 
-def delete_row_by_value(sheet, value, column):
+def delete_row_by_value(sheet, value, column, mode="fullpath"):
 
     try:
 
@@ -182,13 +374,15 @@ def delete_row_by_value(sheet, value, column):
 
         values = sheet.col_values(column_number)
 
+        target_key = tracking_key(value, mode)
+
         for i, cell_value in enumerate(values, start=1):
 
-            if cell_value == value:
+            if tracking_key(cell_value, mode) == target_key:
 
                 sheet.delete_rows(i)
 
-                log(f"[DEL] {value}")
+                log(f"[DEL] {cell_value}")
 
                 return
 
@@ -233,7 +427,7 @@ def initial_sync(folder_config, sheet, known_paths):
                 mode
             )
 
-            if formatted not in known_paths:
+            if not is_in_known(formatted, known_paths, mode):
 
                 rows_to_add.append([formatted])
 
@@ -245,21 +439,42 @@ def initial_sync(folder_config, sheet, known_paths):
 
         try:
 
-            column_number = ord(column.upper()) - 64
+            sort_mode = get_folder_sort(folder_config)
 
-            existing_values = sheet.col_values(column_number)
+            if sort_mode != "off":
 
-            start_row = len(existing_values) + 1
+                column_number = ord(column.upper()) - 64
 
-            for chunk in chunks(rows_to_add, 500):
+                existing_values = [
+                    v for v in sheet.col_values(column_number) if v
+                ]
 
-                end_row = start_row + len(chunk) - 1
+                new_values = [row[0] for row in rows_to_add]
 
-                range_name = f"{column}{start_row}:{column}{end_row}"
+                merged = sort_values(
+                    set(existing_values) | set(new_values),
+                    sort_mode
+                )
 
-                sheet.update(range_name, chunk)
+                rewrite_column(sheet, column, merged)
 
-                start_row = end_row + 1
+            else:
+
+                column_number = ord(column.upper()) - 64
+
+                existing_values = sheet.col_values(column_number)
+
+                start_row = len(existing_values) + 1
+
+                for chunk in chunks(rows_to_add, 500):
+
+                    end_row = start_row + len(chunk) - 1
+
+                    range_name = f"{column}{start_row}:{column}{end_row}"
+
+                    sheet_update(sheet, range_name, chunk)
+
+                    start_row = end_row + 1
 
             log(f"✔ Добавлено: {len(rows_to_add)}")
 
@@ -282,68 +497,120 @@ class FileHandler(FileSystemEventHandler):
         self.sheet = sheet
         self.known_paths = known_paths
         self.folder_config = folder_config
+        self.watch_folder = os.path.normcase(
+            os.path.normpath(folder_config["path"])
+        )
+
+    def _is_in_watch_folder(self, path):
+
+        normalized = os.path.normcase(os.path.normpath(path))
+
+        return (
+            normalized == self.watch_folder
+            or normalized.startswith(self.watch_folder + os.sep)
+        )
+
+    def handle_file_added(self, path):
+
+        column = self.folder_config["column"]
+
+        mode = self.folder_config.get(
+            "mode",
+            "fullpath"
+        )
+
+        formatted = format_path(path, mode)
+
+        if is_in_known(formatted, self.known_paths, mode):
+
+            return
+
+        append_path(
+            self.sheet,
+            formatted,
+            column,
+            get_folder_sort(self.folder_config),
+            mode
+        )
+
+        self.known_paths.add(formatted)
+
+        log(f"[+] {formatted}")
+
+    def handle_file_removed(self, path):
+
+        column = self.folder_config["column"]
+
+        mode = self.folder_config.get(
+            "mode",
+            "fullpath"
+        )
+
+        formatted = format_path(path, mode)
+
+        if not is_in_known(formatted, self.known_paths, mode):
+
+            return
+
+        delete_row_by_value(
+            self.sheet,
+            formatted,
+            column,
+            mode
+        )
+
+        self.known_paths = {
+            known
+            for known in self.known_paths
+            if tracking_key(known, mode) != tracking_key(formatted, mode)
+        }
+
+        log(f"[-] {formatted}")
 
     def on_created(self, event):
 
         if event.is_directory:
             return
 
-        path = event.src_path
+        try:
 
-        column = self.folder_config["column"]
+            self.handle_file_added(event.src_path)
 
-        mode = self.folder_config.get(
-            "mode",
-            "fullpath"
-        )
+        except Exception as e:
 
-        formatted = format_path(
-            path,
-            mode
-        )
-
-        if formatted not in self.known_paths:
-
-            self.known_paths.add(formatted)
-
-            append_path(
-                self.sheet,
-                formatted,
-                column
-            )
-
-            log(f"[+] {formatted}")
+            log(f"[ERROR] {event.src_path}: {e}")
 
     def on_deleted(self, event):
 
         if event.is_directory:
             return
 
-        path = event.src_path
+        try:
 
-        column = self.folder_config["column"]
+            self.handle_file_removed(event.src_path)
 
-        mode = self.folder_config.get(
-            "mode",
-            "fullpath"
-        )
+        except Exception as e:
 
-        formatted = format_path(
-            path,
-            mode
-        )
+            log(f"[ERROR] {event.src_path}: {e}")
 
-        if formatted in self.known_paths:
+    def on_moved(self, event):
 
-            self.known_paths.remove(formatted)
+        if event.is_directory:
+            return
 
-            delete_row_by_value(
-                self.sheet,
-                formatted,
-                column
-            )
+        try:
 
-            log(f"[-] {formatted}")
+            if self._is_in_watch_folder(event.src_path):
+
+                self.handle_file_removed(event.src_path)
+
+            if self._is_in_watch_folder(event.dest_path):
+
+                self.handle_file_added(event.dest_path)
+
+        except Exception as e:
+
+            log(f"[ERROR] {event.src_path} -> {event.dest_path}: {e}")
 
 # =========================================================
 # START WATCH
@@ -404,7 +671,9 @@ def start_watch():
                 column_number
             )
 
-            known_paths = set(existing_values)
+            known_paths = {
+                value for value in existing_values if value
+            }
 
             initial_sync(
                 folder_config,
@@ -490,6 +759,10 @@ def refresh_tree():
         if not isinstance(folder_data, dict):
             continue
 
+        sort_mode = get_folder_sort(folder_data)
+
+        sort_label = SORT_LABELS.get(sort_mode, sort_mode)
+
         tree.insert(
             "",
             tk.END,
@@ -497,7 +770,8 @@ def refresh_tree():
                 folder_data.get("path", ""),
                 folder_data.get("worksheet", "Sheet1"),
                 folder_data.get("column", "A"),
-                folder_data.get("mode", "fullpath")
+                folder_data.get("mode", "fullpath"),
+                sort_label
             )
         )
 
@@ -516,7 +790,7 @@ def add_folder():
 
     popup.title("Добавить папку")
 
-    popup.geometry("300x300")
+    popup.geometry("320x380")
 
     tk.Label(
         popup,
@@ -561,13 +835,35 @@ def add_folder():
 
     mode_menu.pack()
 
+    tk.Label(
+        popup,
+        text="Сортировка"
+    ).pack(pady=5)
+
+    sort_var = tk.StringVar(
+        value=SORT_UI_LABELS["alphabet"]
+    )
+
+    sort_menu = ttk.Combobox(
+        popup,
+        textvariable=sort_var,
+        values=list(SORT_UI_LABELS.values()),
+        state="readonly"
+    )
+
+    sort_menu.pack()
+
     def save_folder():
 
         folder_data = {
             "path": folder,
             "worksheet": worksheet_entry.get(),
             "column": column_entry.get().upper(),
-            "mode": mode_var.get()
+            "mode": mode_var.get(),
+            "sort": SORT_UI_TO_MODE.get(
+                sort_var.get(),
+                "off"
+            )
         }
 
         config["folders"].append(folder_data)
@@ -583,6 +879,103 @@ def add_folder():
         text="Сохранить",
         command=save_folder
     ).pack(pady=20)
+
+# =========================================================
+# SORT FOLDER COLUMN
+# =========================================================
+
+def sort_folder_column():
+
+    selected = tree.selection()
+
+    if not selected:
+
+        messagebox.showinfo(
+            "Сортировка",
+            "Выбери папку в списке"
+        )
+
+        return
+
+    if not config["sheet_url"]:
+
+        messagebox.showerror(
+            "Ошибка",
+            "Укажи Google Sheet URL"
+        )
+
+        return
+
+    if not config["credentials_path"]:
+
+        messagebox.showerror(
+            "Ошибка",
+            "Выбери credentials.json"
+        )
+
+        return
+
+    item = selected[0]
+
+    values = tree.item(item, "values")
+
+    folder_path = values[0]
+
+    folder_data = next(
+        (
+            f for f in config["folders"]
+
+            if f["path"] == folder_path
+        ),
+        None
+    )
+
+    if not folder_data:
+
+        return
+
+    try:
+
+        sheet = connect_sheet(
+            config["sheet_url"],
+            folder_data["worksheet"]
+        )
+
+        column = folder_data["column"]
+
+        sort_mode = get_folder_sort(folder_data)
+
+        if sort_mode == "off":
+
+            messagebox.showinfo(
+                "Сортировка",
+                "Для этой папки сортировка выключена.\n"
+                "Выбери тип в «Редактировать»."
+            )
+
+            return
+
+        sorted_values = sort_column_in_sheet(
+            sheet,
+            column,
+            sort_mode
+        )
+
+        sort_label = SORT_LABELS.get(sort_mode, sort_mode)
+
+        log(
+            f"✔ Отсортировано {len(sorted_values)} записей "
+            f"({sort_label}, {folder_path}, колонка {column})"
+        )
+
+    except Exception as e:
+
+        log(f"[ERROR] Сортировка: {e}")
+
+        messagebox.showerror(
+            "Ошибка",
+            str(e)
+        )
 
 # =========================================================
 # REMOVE FOLDER
@@ -645,7 +1038,7 @@ def edit_folder():
 
     popup.title("Редактирование")
 
-    popup.geometry("300x300")
+    popup.geometry("320x380")
 
     tk.Label(
         popup,
@@ -705,6 +1098,29 @@ def edit_folder():
 
     mode_menu.pack()
 
+    tk.Label(
+        popup,
+        text="Сортировка"
+    ).pack(pady=5)
+
+    current_sort = get_folder_sort(folder_data)
+
+    sort_var = tk.StringVar(
+        value=SORT_UI_LABELS.get(
+            current_sort,
+            SORT_UI_LABELS["off"]
+        )
+    )
+
+    sort_menu = ttk.Combobox(
+        popup,
+        textvariable=sort_var,
+        values=list(SORT_UI_LABELS.values()),
+        state="readonly"
+    )
+
+    sort_menu.pack()
+
     def save_edit():
 
         folder_data["worksheet"] = worksheet_entry.get()
@@ -712,6 +1128,11 @@ def edit_folder():
         folder_data["column"] = column_entry.get().upper()
 
         folder_data["mode"] = mode_var.get()
+
+        folder_data["sort"] = SORT_UI_TO_MODE.get(
+            sort_var.get(),
+            "off"
+        )
 
         save_config()
 
@@ -916,7 +1337,8 @@ tree = ttk.Treeview(
         "Folder",
         "Worksheet",
         "Column",
-        "Mode"
+        "Mode",
+        "Sort"
     ),
     show="headings",
     height=12
@@ -942,9 +1364,14 @@ tree.heading(
     text="Mode"
 )
 
+tree.heading(
+    "Sort",
+    text="Sort"
+)
+
 tree.column(
     "Folder",
-    width=500
+    width=450
 )
 
 tree.column(
@@ -960,6 +1387,11 @@ tree.column(
 tree.column(
     "Mode",
     width=120
+)
+
+tree.column(
+    "Sort",
+    width=90
 )
 
 tree.pack(
@@ -992,6 +1424,12 @@ tk.Button(
     btn_frame,
     text="Удалить",
     command=remove_folder
+).pack(side=tk.LEFT, padx=5)
+
+tk.Button(
+    btn_frame,
+    text="Сортировать",
+    command=sort_folder_column
 ).pack(side=tk.LEFT, padx=5)
 
 # =========================================================
@@ -1051,12 +1489,20 @@ instruction.insert(
 - worksheet
 - column
 - mode
+- сортировка: Выкл / Алфавит / Возрастание / Убывание
 
 Modes:
 - fullpath
 - filename
 
-6. Нажми Старт
+Сортировка:
+- Алфавит — А→Я (без учёта регистра)
+- Возрастание — с учётом чисел (1, 2, 10)
+- Убывание — обратный порядок
+
+6. Кнопка «Сортировать» — пересортировать колонку в таблице
+
+7. Нажми Старт
 
 Все настройки сохраняются автоматически.
 """
